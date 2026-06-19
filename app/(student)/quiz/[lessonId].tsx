@@ -31,8 +31,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { db } from "../../../src/config/firebase";
 import { useAuth } from "../../../src/context/AuthContext";
-import { generateCertificate } from "../../../src/services/certificateService";
-import { updateCourseProgress } from "../../../src/services/progressService";
+import { markLessonComplete, updateCourseProgress } from "../../../src/services/progressService";
 import { Spacing, Typography } from "../../../src/theme";
 import { Colors } from "../../../src/theme/colors";
 
@@ -147,7 +146,7 @@ export default function QuizScreen() {
 
       const passed = pct >= passMark;
 
-      // Save result
+      // Save quiz result
       const resultId = `${user.uid}_${lessonId}`;
       await setDoc(doc(db, "quizResults", resultId), {
         userId: user.uid,
@@ -158,24 +157,23 @@ export default function QuizScreen() {
         passed,
         answers: answers as number[],
         completedAt: serverTimestamp(),
-        attempts: 1, // Simplified for demo
+        attempts: 1,
       });
 
-      // Update course progress
-      if (courseId) {
-        const result = await updateCourseProgress(user.uid, courseId as string);
+      // If quiz passed, mark the lesson as complete so completedLessons count
+      // is accurate before the course-complete check below.
+      if (passed && courseId) {
+        await markLessonComplete(
+          user.uid,
+          lessonId as string,
+          courseId as string,
+        );
+      }
 
-        // If course is now complete, generate certificate
-        if (result?.courseComplete) {
-          const studentName =
-            profile?.fullName || user.displayName || user.email || "Student";
-          await generateCertificate(
-            user.uid,
-            courseId as string,
-            studentName,
-            courseTitle,
-          );
-        }
+      // Recalculate overall course progress (also auto-generates certificate
+      // via progressService when courseComplete is true)
+      if (courseId) {
+        await updateCourseProgress(user.uid, courseId as string);
       }
 
       setSubmitted(true);

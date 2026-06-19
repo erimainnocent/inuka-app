@@ -184,6 +184,51 @@ export async function markCourseComplete(userId: string, courseId: string) {
       ? (courseSnap.data() as any).title || "Course"
       : "Course";
 
+    // Check if this course has quizzes and whether all have been passed.
+    // A single-video course may still carry a quiz that must be passed (≥60%).
+    const quizzesSnap = await getDocs(
+      query(collection(db, "quizzes"), where("courseId", "==", courseId)),
+    );
+    const totalQuizzes = quizzesSnap.size;
+    let allQuizzesPassed = true;
+
+    if (totalQuizzes > 0) {
+      for (const quizDoc of quizzesSnap.docs) {
+        const lessonId = quizDoc.data().lessonId;
+        const resultId = `${userId}_${lessonId}`;
+        const resultRef = doc(db, "quizResults", resultId);
+        const resultSnap = await getDoc(resultRef);
+        if (!resultSnap.exists() || !resultSnap.data()?.passed) {
+          allQuizzesPassed = false;
+          break;
+        }
+      }
+    }
+
+    // If quizzes exist but are not all passed, mark the video as watched (80%)
+    // but do NOT set completedAt or generate a certificate yet.
+    if (totalQuizzes > 0 && !allQuizzesPassed) {
+      const partialData: any = {
+        progress: 80,
+        completedLessonsCount: 1,
+        totalLessonsCount: 1,
+        videoWatched: true,
+      };
+      if (!enrollSnap.exists()) {
+        await setDoc(enrollmentRef, {
+          userId,
+          courseId,
+          enrolledAt: serverTimestamp(),
+          ...partialData,
+        });
+      } else {
+        await updateDoc(enrollmentRef, partialData);
+      }
+      // Do NOT generate certificate — quiz not yet passed
+      return;
+    }
+
+    // All quizzes passed (or no quizzes) → mark course fully complete
     const updateData: any = {
       progress: 100,
       completedLessonsCount: 1,

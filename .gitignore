@@ -42,3 +42,8 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Firebase & Google credentials (keep out of version control)
+google-services.json
+GoogleService-Info.plist
+*-firebase-adminsdk-*.json

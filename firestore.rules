@@ -95,8 +95,11 @@ service cloud.firestore {
     match /certificates/{certificateId} {
       // Allow users to read their own certificates
       allow read: if isAuthenticated() && (isAdmin() || resource == null || resource.data.userId == request.auth.uid);
-      // Only admins can issue/update certificates
-      allow write: if isAdmin();
+      // Users can create their own certificate (client-side generation after course completion)
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      // Only admins can update or delete certificate records
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     // Deny access to everything else by default
