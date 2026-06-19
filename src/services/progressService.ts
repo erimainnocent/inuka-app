@@ -10,7 +10,6 @@ import {
     where,
 } from "firebase/firestore";
 import { db } from "../config/firebase";
-import { generateCertificate } from "./certificateService";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // ─── Mark a Lesson as Complete ───────────────────────────────────────────────
@@ -131,30 +130,6 @@ export async function updateCourseProgress(userId: string, courseId: string) {
     }
 
     await updateDoc(enrollmentRef, updateData);
-
-    // Auto-generate certificate when course becomes complete
-    if (courseComplete) {
-      try {
-        // fetch student name and course title for certificate
-        const userRef = doc(db, "users", userId);
-        const userSnap = await getDoc(userRef);
-        const studentName = userSnap.exists()
-          ? (userSnap.data() as any).fullName ||
-            (userSnap.data() as any).displayName ||
-            "Student"
-          : "Student";
-
-        const courseRef = doc(db, "courses", courseId);
-        const courseSnap = await getDoc(courseRef);
-        const courseTitle = courseSnap.exists()
-          ? (courseSnap.data() as any).title || "Course"
-          : "Course";
-
-        await generateCertificate(userId, courseId, studentName, courseTitle);
-      } catch (err) {
-        console.error("Error auto-generating certificate:", err);
-      }
-    }
   }
 
   return { progress, courseComplete, completedLessons: completedLessonsCount, totalLessons };
@@ -193,21 +168,6 @@ export async function markCourseComplete(userId: string, courseId: string) {
     const enrollmentId = `${userId}_${courseId}`;
     const enrollmentRef = doc(db, "enrollments", enrollmentId);
     const enrollSnap = await getDoc(enrollmentRef);
-
-    const courseRef = doc(db, "courses", courseId);
-    const courseSnap = await getDoc(courseRef);
-
-    const userRef = doc(db, "users", userId);
-    const userSnap = await getDoc(userRef);
-
-    const studentName = userSnap.exists()
-      ? (userSnap.data() as any).fullName ||
-        (userSnap.data() as any).displayName ||
-        "Student"
-      : "Student";
-    const courseTitle = courseSnap.exists()
-      ? (courseSnap.data() as any).title || "Course"
-      : "Course";
 
     // Check if this course has quizzes and whether all have been passed.
     // A single-video course may still carry a quiz that must be passed (≥60%).
@@ -276,9 +236,6 @@ export async function markCourseComplete(userId: string, courseId: string) {
       }
       await updateDoc(enrollmentRef, updateData);
     }
-
-    // Generate certificate and attach to enrollment
-    await generateCertificate(userId, courseId, studentName, courseTitle);
   } catch (err) {
     console.error("Error in markCourseComplete:", err);
   }

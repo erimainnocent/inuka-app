@@ -53,6 +53,7 @@ import {
     markCourseComplete,
     getLessonProgressMap,
 } from "../../../src/services/progressService";
+import { generateCertificate } from "../../../src/services/certificateService";
 import { Spacing, Typography } from "../../../src/theme";
 import { Colors } from "../../../src/theme/colors";
 
@@ -60,7 +61,7 @@ const { width } = Dimensions.get("window");
 
 export default function CourseDetails() {
   const { id } = useLocalSearchParams();
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -81,6 +82,11 @@ export default function CourseDetails() {
   const [playing, setPlaying] = useState(false);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+
+  const [certificate, setCertificate] = useState<any>(null);
+  const [checkingCertificate, setCheckingCertificate] = useState(false);
+  const [requestingCertificate, setRequestingCertificate] = useState(false);
+  const [completedAt, setCompletedAt] = useState<any>(null);
 
   const videoRef = useRef<Video>(null);
   const lastUpdateRef = useRef<number>(Date.now());
@@ -119,7 +125,9 @@ export default function CourseDetails() {
         (snap) => {
           setIsEnrolled(snap.exists());
           if (snap.exists()) {
-            setCourseProgress(snap.data()?.progress || 0);
+            const data = snap.data();
+            setCourseProgress(data?.progress || 0);
+            setCompletedAt(data?.completedAt || null);
           }
         },
         (error) => {
@@ -512,6 +520,105 @@ export default function CourseDetails() {
     }
   };
 
+  // Check if certificate exists when course is completed
+  useEffect(() => {
+    if (!user || !id) {
+      setCertificate(null);
+      setCheckingCertificate(false);
+      return;
+    }
+
+    // Calculate completion status inside the hook to avoid hook ordering issues
+    let completedUnits = 0;
+    lessons.forEach((l) => {
+      const isDone = completedLessonIds.includes(l.id);
+      if (isDone) {
+        completedUnits += 1;
+      } else {
+        const progressInfo = lessonProgressMap[l.id];
+        const progressPct = progressInfo ? progressInfo.progressPercent : 0;
+        completedUnits += progressPct / 100;
+      }
+    });
+    const calcProgress = lessons.length > 0 ? Math.round((completedUnits / lessons.length) * 100) : 0;
+    const dispProgress = Math.max(courseProgress, calcProgress);
+    const completed = dispProgress === 100 || !!completedAt;
+
+    if (!completed) {
+      setCertificate(null);
+      setCheckingCertificate(false);
+      return;
+    }
+
+    const checkCert = async () => {
+      setCheckingCertificate(true);
+      try {
+        const certSnap = await getDocs(
+          query(
+            collection(db, "certificates"),
+            where("userId", "==", user.uid),
+            where("courseId", "==", id),
+          ),
+        );
+        if (!certSnap.empty) {
+          setCertificate(certSnap.docs[0].data());
+        } else {
+          setCertificate(null);
+        }
+      } catch (err) {
+        console.error("Error checking certificate:", err);
+      } finally {
+        setCheckingCertificate(false);
+      }
+    };
+
+    checkCert();
+  }, [user, id, courseProgress, completedLessonIds, lessonProgressMap, lessons, completedAt]);
+
+  const handleRequestCertificate = async () => {
+    if (!user || !course) return;
+
+    setRequestingCertificate(true);
+    try {
+      const studentName = profile?.fullName || user.displayName || "Student";
+      const courseTitle = course.title || "Course";
+
+      const result = await generateCertificate(
+        user.uid,
+        course.id,
+        studentName,
+        courseTitle,
+      );
+
+      if (result) {
+        // Re-fetch certificate to ensure it exists in state
+        const docId = `${user.uid}_${course.id}`;
+        const certSnap = await getDoc(doc(db, "certificates", docId));
+        if (certSnap.exists()) {
+          setCertificate(certSnap.data());
+        } else {
+          setCertificate({
+            userId: user.uid,
+            courseId: course.id,
+            courseTitle,
+            studentName,
+            certificateId: result.certId,
+            pdfUrl: result.pdfUrl,
+            issuedAt: { seconds: Date.now() / 1000 },
+          });
+        }
+        Alert.alert("Success", "Your certificate has been generated successfully!");
+      } else {
+        Alert.alert("Error", "Could not generate certificate. Please try again.");
+      }
+    } catch (e) {
+      console.error("Error requesting certificate:", e);
+      Alert.alert("Error", "An unexpected error occurred. Please try again.");
+    } finally {
+      setRequestingCertificate(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -540,6 +647,7 @@ export default function CourseDetails() {
     : 0;
 
   const displayProgress = Math.max(courseProgress, calculatedProgress);
+  const isCompleted = displayProgress === 100 || !!completedAt;
 
   return (
     <View style={styles.container}>
@@ -917,18 +1025,62 @@ export default function CourseDetails() {
       <View
         style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}
       >
-        {isEnrolled ? (
-          <View style={styles.enrolledStatus}>
-            <CheckCircle size={20} color={Colors.success} />
-            <Text style={styles.enrolledText}>You are enrolled</Text>
-          </View>
-        ) : (
+        {!isEnrolled ? (
           <TouchableOpacity style={styles.enrollButton} onPress={handleEnroll}>
             <View style={styles.enrollArrowBg}>
               <ArrowRight size={18} color={Colors.white} />
             </View>
             <Text style={styles.enrollBtnText}>Enroll Now</Text>
           </TouchableOpacity>
+        ) : isCompleted ? (
+          checkingCertificate ? (
+            <View style={styles.certificateLoadingStatus}>
+              <ActivityIndicator size="small" color={Colors.primary} />
+              <Text style={styles.certificateLoadingText}>Checking certificate status...</Text>
+            </View>
+          ) : requestingCertificate ? (
+            <View style={styles.certificateLoadingStatus}>
+              <ActivityIndicator size="small" color={Colors.primary} />
+              <Text style={styles.certificateLoadingText}>Generating your certificate...</Text>
+            </View>
+          ) : !certificate ? (
+            <TouchableOpacity
+              style={styles.requestCertificateButton}
+              onPress={handleRequestCertificate}
+              activeOpacity={0.8}
+            >
+              <Award size={18} color={Colors.white} />
+              <Text style={styles.requestCertificateBtnText}>Request a Certificate</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.viewCertificateButton}
+              onPress={() => {
+                router.push({
+                  pathname: "/(student)/certificate/[id]",
+                  params: {
+                    id: certificate.certificateId || certificate.id,
+                    studentName: certificate.studentName,
+                    courseTitle: certificate.courseTitle,
+                    completionDate: certificate.issuedAt
+                      ? new Date(certificate.issuedAt.seconds * 1000).toLocaleDateString()
+                      : new Date().toLocaleDateString(),
+                    certId: certificate.certificateId,
+                    pdfUrl: certificate.pdfUrl,
+                  },
+                });
+              }}
+              activeOpacity={0.8}
+            >
+              <Award size={18} color="#c5a059" />
+              <Text style={styles.viewCertificateBtnText}>View Certificate</Text>
+            </TouchableOpacity>
+          )
+        ) : (
+          <View style={styles.enrolledStatus}>
+            <CheckCircle size={20} color={Colors.success} />
+            <Text style={styles.enrolledText}>You are enrolled</Text>
+          </View>
         )}
       </View>
     </View>
@@ -1441,5 +1593,50 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: 20,
     marginTop: -2,
+  },
+  // ─── Certificate Actions ───
+  requestCertificateButton: {
+    height: 56,
+    backgroundColor: Colors.primary,
+    borderRadius: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+    gap: 10,
+  },
+  requestCertificateBtnText: {
+    ...Typography.h3,
+    color: Colors.white,
+    fontWeight: "700",
+  },
+  viewCertificateButton: {
+    height: 56,
+    backgroundColor: "#1a1a2e",
+    borderRadius: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
+    gap: 10,
+    borderWidth: 2,
+    borderColor: "#c5a059",
+  },
+  viewCertificateBtnText: {
+    ...Typography.h3,
+    color: "#c5a059",
+    fontWeight: "700",
+  },
+  certificateLoadingStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 56,
+    gap: 10,
+  },
+  certificateLoadingText: {
+    ...Typography.bodySmall,
+    color: Colors.textSecondary,
+    fontWeight: "600",
   },
 });
