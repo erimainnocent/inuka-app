@@ -522,6 +522,25 @@ export default function CourseDetails() {
 
   if (!course) return null;
 
+  // Calculate dynamic overall progress
+  let completedUnitsFromLessons = 0;
+  lessons.forEach((l) => {
+    const isDone = completedLessonIds.includes(l.id);
+    if (isDone) {
+      completedUnitsFromLessons += 1;
+    } else {
+      const progressInfo = lessonProgressMap[l.id];
+      const progressPct = progressInfo ? progressInfo.progressPercent : 0;
+      completedUnitsFromLessons += progressPct / 100;
+    }
+  });
+
+  const calculatedProgress = lessons.length > 0
+    ? Math.round((completedUnitsFromLessons / lessons.length) * 100)
+    : 0;
+
+  const displayProgress = Math.max(courseProgress, calculatedProgress);
+
   return (
     <View style={styles.container}>
       <View style={styles.videoHeader}>
@@ -727,13 +746,13 @@ export default function CourseDetails() {
             <View style={styles.progressSection}>
               <View style={styles.progressHeader}>
                 <Text style={styles.progressLabel}>Your Progress</Text>
-                <Text style={styles.progressPct}>{courseProgress}%</Text>
+                <Text style={styles.progressPct}>{displayProgress}%</Text>
               </View>
               <View style={styles.progressBarBg}>
                 <View
                   style={[
                     styles.progressBarFill,
-                    { width: `${courseProgress}%` },
+                    { width: `${displayProgress}%` },
                   ]}
                 />
               </View>

@@ -122,7 +122,7 @@ export async function updateCourseProgress(userId: string, courseId: string) {
   if (enrollSnap.exists()) {
     const updateData: any = {
       progress,
-      completedLessonsCount: completedLessons,
+      completedLessonsCount: completedLessonsCount,
       totalLessonsCount: totalLessons,
     };
 
