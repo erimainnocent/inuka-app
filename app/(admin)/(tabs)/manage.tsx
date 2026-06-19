@@ -9,7 +9,7 @@ import {
   collection, getDocs, deleteDoc, doc, orderBy, query, addDoc, where,
   serverTimestamp, updateDoc,
 } from 'firebase/firestore';
-import { getDownloadURL, uploadBytesResumable, ref } from 'firebase/storage';
+import { getDownloadURL, uploadBytesResumable, ref, deleteObject } from 'firebase/storage';
 import { db, storage, auth } from '../../../src/config/firebase';
 import { Input } from '../../../src/components/Input';
 import { Button } from '../../../src/components/Button';
@@ -157,19 +157,20 @@ export default function ManageCoursesScreen() {
     setSubmitting(true);
     try {
       const ts = Date.now();
-      let videoUrl = formVideoUrl || '';
       let pdfUrl = formPdfUrl || '';
       let coverUrl = editingId
         ? (courses.find(c => c.id === editingId)?.coverImageUrl || 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=600')
         : 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=600';
-      if (selectedVideo) videoUrl = await uploadFile(selectedVideo.uri, `courses/videos/${ts}_${selectedVideo.name || 'v.mp4'}`, 'Uploading Video');
       if (selectedPdf) pdfUrl = await uploadFile(selectedPdf.uri, `courses/materials/${ts}_${selectedPdf.name || 'm.pdf'}`, 'Uploading PDF');
       if (selectedImage) coverUrl = await uploadFile(selectedImage.uri, `courses/covers/${ts}_cover.jpg`, 'Uploading Cover Image');
       const data: any = {
         title: formTitle, description: formDesc,
         coverImageUrl: coverUrl, hasPdfMaterial: !!(pdfUrl), pdfUrl, updatedAt: serverTimestamp(),
       };
-      if (videoUrl) data.videoUrl = videoUrl;
+      if (editingId) {
+        const existingVideo = courses.find(c => c.id === editingId)?.videoUrl;
+        if (existingVideo) data.videoUrl = existingVideo;
+      }
       if (editingId) {
         await updateDoc(doc(db, 'courses', editingId), data);
         Alert.alert('Updated', 'Course updated!');
@@ -216,6 +217,17 @@ export default function ManageCoursesScreen() {
       const ts = Date.now();
       let videoUrl = formVideoUrl;
       let pdfUrl = formPdfUrl;
+
+      if (editingId) {
+        const oldLesson = lessons.find(l => l.id === editingId);
+        if (selectedVideo && oldLesson?.videoUrl && oldLesson.videoUrl !== formVideoUrl && oldLesson.videoUrl.startsWith('https://firebasestorage.googleapis.com')) {
+          try { await deleteObject(ref(storage, oldLesson.videoUrl)); } catch (err) { console.warn('Old video delete error:', err); }
+        }
+        if (selectedPdf && oldLesson?.pdfUrl && oldLesson.pdfUrl !== formPdfUrl && oldLesson.pdfUrl.startsWith('https://firebasestorage.googleapis.com')) {
+          try { await deleteObject(ref(storage, oldLesson.pdfUrl)); } catch (err) { console.warn('Old PDF delete error:', err); }
+        }
+      }
+
       if (selectedVideo) videoUrl = await uploadFile(selectedVideo.uri, `lessons/videos/${ts}_${selectedVideo.name || 'v.mp4'}`, 'Uploading Video');
       if (selectedPdf) pdfUrl = await uploadFile(selectedPdf.uri, `lessons/pdfs/${ts}_${selectedPdf.name || 'm.pdf'}`, 'Uploading PDF');
       const data: any = {
@@ -237,6 +249,47 @@ export default function ManageCoursesScreen() {
       setModalType(null); resetForm(); fetchAll();
     } catch (e: any) { console.error(e); Alert.alert('Error', e.message || 'Failed to save lesson'); }
     finally { setSubmitting(false); }
+  };
+
+  const handleRemoveLessonVideo = async () => {
+    Alert.alert(
+      'Remove Video',
+      'Are you sure you want to remove the video from this lesson? This will delete the file from storage.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setSubmitting(true);
+            try {
+              if (formVideoUrl && formVideoUrl.startsWith('https://firebasestorage.googleapis.com')) {
+                try {
+                  await deleteObject(ref(storage, formVideoUrl));
+                } catch (err) {
+                  console.warn('Storage delete error:', err);
+                }
+              }
+              if (editingId) {
+                await updateDoc(doc(db, 'lessons', editingId), {
+                  videoUrl: null,
+                  updatedAt: serverTimestamp(),
+                });
+                Alert.alert('Success', 'Video removed');
+              }
+              setFormVideoUrl('');
+              setSelectedVideo(null);
+              fetchAll();
+            } catch (err: any) {
+              console.error(err);
+              Alert.alert('Error', err.message || 'Failed to remove video');
+            } finally {
+              setSubmitting(false);
+            }
+          }
+        }
+      ]
+    );
   };
 
   // ─── Save: Quiz ───────────────────────────────────────────────────────────
@@ -285,7 +338,42 @@ export default function ManageCoursesScreen() {
   const handleDelete = (colName: string, id: string, label: string) => {
     Alert.alert(`Delete ${label}?`, 'This cannot be undone.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { await deleteDoc(doc(db, colName, id)); fetchAll(); } },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            if (colName === 'lessons') {
+              const lesson = lessons.find(l => l.id === id);
+              if (lesson) {
+                if (lesson.videoUrl && lesson.videoUrl.startsWith('https://firebasestorage.googleapis.com')) {
+                  try { await deleteObject(ref(storage, lesson.videoUrl)); } catch (e) { console.warn(e); }
+                }
+                if (lesson.pdfUrl && lesson.pdfUrl.startsWith('https://firebasestorage.googleapis.com')) {
+                  try { await deleteObject(ref(storage, lesson.pdfUrl)); } catch (e) { console.warn(e); }
+                }
+              }
+            } else if (colName === 'courses') {
+              const course = courses.find(c => c.id === id);
+              if (course) {
+                if (course.videoUrl && course.videoUrl.startsWith('https://firebasestorage.googleapis.com')) {
+                  try { await deleteObject(ref(storage, course.videoUrl)); } catch (e) { console.warn(e); }
+                }
+                if (course.pdfUrl && course.pdfUrl.startsWith('https://firebasestorage.googleapis.com')) {
+                  try { await deleteObject(ref(storage, course.pdfUrl)); } catch (e) { console.warn(e); }
+                }
+                if (course.coverImageUrl && course.coverImageUrl.startsWith('https://firebasestorage.googleapis.com') && !course.coverImageUrl.includes('unsplash.com')) {
+                  try { await deleteObject(ref(storage, course.coverImageUrl)); } catch (e) { console.warn(e); }
+                }
+              }
+            }
+            await deleteDoc(doc(db, colName, id));
+            fetchAll();
+          } catch (e: any) {
+            Alert.alert('Error', e.message || 'Failed to delete');
+          }
+        }
+      },
     ]);
   };
 
@@ -369,12 +457,20 @@ export default function ManageCoursesScreen() {
                             <View style={s.lessonDot} />
                             <View style={{ flex: 1 }}>
                               <Text style={s.lessonTitle} numberOfLines={1}>{les.title}</Text>
-                              {lesQuiz && (
-                                <View style={s.quizTag}>
-                                  <ClipboardList size={9} color="#d97706" />
-                                  <Text style={s.quizTagText}>Has Quiz</Text>
-                                </View>
-                              )}
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                                {les.videoUrl ? (
+                                  <View style={[s.quizTag, { marginTop: 0, backgroundColor: Colors.primaryLight, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4 }]}>
+                                    <Video size={9} color={Colors.primary} />
+                                    <Text style={[s.quizTagText, { color: Colors.primary }]}>Video</Text>
+                                  </View>
+                                ) : null}
+                                {lesQuiz && (
+                                  <View style={[s.quizTag, { marginTop: 0, backgroundColor: '#fef3c7', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4 }]}>
+                                    <ClipboardList size={9} color="#d97706" />
+                                    <Text style={s.quizTagText}>Has Quiz</Text>
+                                  </View>
+                                )}
+                              </View>
                             </View>
                             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                               {/* Edit lesson */}
@@ -497,10 +593,8 @@ export default function ManageCoursesScreen() {
               {modalType === 'course' && (
                 <View style={s.section}>
                   <Text style={s.sectionLabel}>Media (all optional)</Text>
-                  <Input label="Intro Video URL" placeholder="https://... (or upload below)" value={formVideoUrl} onChangeText={setFormVideoUrl} />
                   {[
                     { label: selectedImage ? '✓ Cover Image selected' : 'Upload Cover Image', fn: pickImage, active: !!selectedImage, icon: <ImageIcon size={15} color={selectedImage ? Colors.white : Colors.primary} /> },
-                    { label: selectedVideo ? '✓ Video selected' : 'Upload Video File', fn: pickVideo, active: !!selectedVideo, icon: <Video size={15} color={selectedVideo ? Colors.white : Colors.primary} /> },
                     { label: selectedPdf ? '✓ PDF selected' : 'Upload PDF Material', fn: pickPdf, active: !!selectedPdf, icon: <FileText size={15} color={selectedPdf ? Colors.white : Colors.primary} /> },
                   ].map((p, i) => (
                     <TouchableOpacity key={i} style={[s.pickerRow, p.active && s.pickerRowActive]} onPress={p.fn}>
@@ -522,6 +616,19 @@ export default function ManageCoursesScreen() {
                   <Text style={s.sectionLabel}>Lesson Content</Text>
                   <Input label="Video URL (optional)" placeholder="https://... (or upload below)" value={formVideoUrl} onChangeText={setFormVideoUrl} />
                   <Input label="PDF URL (optional)" placeholder="https://..." value={formPdfUrl} onChangeText={setFormPdfUrl} />
+                  
+                  {(!!formVideoUrl || !!selectedVideo) && (
+                    <TouchableOpacity
+                      style={[s.pickerRow, { backgroundColor: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.2)', marginBottom: Spacing.md }]}
+                      onPress={selectedVideo ? () => setSelectedVideo(null) : handleRemoveLessonVideo}
+                    >
+                      <Trash2 size={15} color={Colors.error} />
+                      <Text style={[s.pickerRowText, { color: Colors.error }]}>
+                        {selectedVideo ? 'Clear Selected Video' : 'Remove Video from Lesson'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+
                   <Text style={s.sectionLabel}>Upload Files</Text>
                   {[
                     { label: selectedVideo ? '✓ Video selected' : 'Upload Video File', fn: pickVideo, active: !!selectedVideo, icon: <Video size={15} color={selectedVideo ? Colors.white : Colors.primary} /> },

@@ -43,6 +43,7 @@ import { useAuth } from "../../../src/context/AuthContext";
 import {
     isLessonCompleted,
     markLessonComplete,
+    queueOfflineAction,
 } from "../../../src/services/progressService";
 import { Spacing, Typography } from "../../../src/theme";
 import { Colors } from "../../../src/theme/colors";
@@ -126,12 +127,20 @@ export default function LessonDetail() {
   const handleAutoComplete = async () => {
     if (!user || !lesson || completed || autoCompleting) return;
     setAutoCompleting(true);
+    const courseId = (paramCourseId as string) || lesson.courseId;
     try {
-      const courseId = (paramCourseId as string) || lesson.courseId;
       await markLessonComplete(user.uid, lesson.id, courseId);
       setCompleted(true);
     } catch (error) {
-      console.error("Error auto-completing lesson:", error);
+      console.warn("Offline/Error marking lesson complete, queuing action:", error);
+      await queueOfflineAction({
+        type: "lesson_completion",
+        userId: user.uid,
+        lessonId: lesson.id,
+        courseId,
+        timestamp: Date.now(),
+      });
+      setCompleted(true);
     } finally {
       setAutoCompleting(false);
     }

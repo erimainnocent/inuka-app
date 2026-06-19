@@ -31,7 +31,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { db } from "../../../src/config/firebase";
 import { useAuth } from "../../../src/context/AuthContext";
-import { markLessonComplete, updateCourseProgress } from "../../../src/services/progressService";
+import { markLessonComplete, updateCourseProgress, queueOfflineAction } from "../../../src/services/progressService";
 import { Spacing, Typography } from "../../../src/theme";
 import { Colors } from "../../../src/theme/colors";
 
@@ -148,32 +148,47 @@ export default function QuizScreen() {
 
       // Save quiz result
       const resultId = `${user.uid}_${lessonId}`;
-      await setDoc(doc(db, "quizResults", resultId), {
-        userId: user.uid,
-        lessonId,
-        courseId: courseId || "",
-        quizId,
-        score: pct,
-        passed,
-        answers: answers as number[],
-        completedAt: serverTimestamp(),
-        attempts: 1,
-      });
+      try {
+        await setDoc(doc(db, "quizResults", resultId), {
+          userId: user.uid,
+          lessonId,
+          courseId: courseId || "",
+          quizId,
+          score: pct,
+          passed,
+          answers: answers as number[],
+          completedAt: serverTimestamp(),
+          attempts: 1,
+        });
 
-      // If quiz passed, mark the lesson as complete so completedLessons count
-      // is accurate before the course-complete check below.
-      if (passed && courseId) {
-        await markLessonComplete(
-          user.uid,
-          lessonId as string,
-          courseId as string,
-        );
-      }
+        // If quiz passed, mark the lesson as complete so completedLessons count
+        // is accurate before the course-complete check below.
+        if (passed && courseId) {
+          await markLessonComplete(
+            user.uid,
+            lessonId as string,
+            courseId as string,
+          );
+        }
 
-      // Recalculate overall course progress (also auto-generates certificate
-      // via progressService when courseComplete is true)
-      if (courseId) {
-        await updateCourseProgress(user.uid, courseId as string);
+        // Recalculate overall course progress (also auto-generates certificate
+        // via progressService when courseComplete is true)
+        if (courseId) {
+          await updateCourseProgress(user.uid, courseId as string);
+        }
+      } catch (dbError) {
+        console.warn("Offline/Error submitting quiz results, queuing action:", dbError);
+        await queueOfflineAction({
+          type: "quiz_submission",
+          userId: user.uid,
+          lessonId: lessonId as string,
+          courseId: (courseId as string) || "",
+          quizId: quizId || "",
+          score: pct,
+          passed,
+          answers: answers as number[],
+          timestamp: Date.now(),
+        });
       }
 
       setSubmitted(true);

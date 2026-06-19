@@ -1,9 +1,12 @@
 import { useEffect } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth, isAdminRole } from '../src/context/AuthContext';
 import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Colors } from '../src/theme/colors';
+import NetInfo from '@react-native-community/netinfo';
+import { flushOfflineQueue } from '../src/services/progressService';
 
 // Custom light theme matching INUKA's color palette
 const InukaLightTheme = {
@@ -23,6 +26,33 @@ function RootLayoutNav() {
   const { user, loading, role, profile } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+
+  // Flush offline queue when connectivity returns or app foregrounds
+  useEffect(() => {
+    const unsubscribeNet = NetInfo.addEventListener(state => {
+      if (state.isConnected) {
+        console.log('Network connected. Flushing offline queue...');
+        flushOfflineQueue();
+      }
+    });
+
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        console.log('App came to foreground. Checking network to flush offline queue...');
+        NetInfo.fetch().then(state => {
+          if (state.isConnected) {
+            flushOfflineQueue();
+          }
+        });
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', handleAppStateChange);
+
+    return () => {
+      unsubscribeNet();
+      appStateSub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (loading) return;

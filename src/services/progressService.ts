@@ -11,6 +11,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../config/firebase";
 import { generateCertificate } from "./certificateService";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // ─── Mark a Lesson as Complete ───────────────────────────────────────────────
 export async function markLessonComplete(
@@ -256,5 +257,119 @@ export async function markCourseComplete(userId: string, courseId: string) {
     await generateCertificate(userId, courseId, studentName, courseTitle);
   } catch (err) {
     console.error("Error in markCourseComplete:", err);
+  }
+}
+
+const OFFLINE_QUEUE_KEY = "offline_completion_queue";
+
+export interface OfflineAction {
+  type: "lesson_completion" | "quiz_submission";
+  userId: string;
+  lessonId: string;
+  courseId: string;
+  timestamp: number;
+  quizId?: string;
+  score?: number;
+  passed?: boolean;
+  answers?: number[];
+}
+
+export async function queueOfflineAction(action: OfflineAction) {
+  try {
+    const raw = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
+    const queue: OfflineAction[] = raw ? JSON.parse(raw) : [];
+    if (action.type === "lesson_completion") {
+      const exists = queue.some(
+        a => a.type === "lesson_completion" && a.userId === action.userId && a.lessonId === action.lessonId
+      );
+      if (exists) return;
+    }
+    if (action.type === "quiz_submission") {
+      const idx = queue.findIndex(
+        a => a.type === "quiz_submission" && a.userId === action.userId && a.lessonId === action.lessonId
+      );
+      if (idx !== -1) {
+        queue[idx] = action;
+      } else {
+        queue.push(action);
+      }
+    } else {
+      queue.push(action);
+    }
+    await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+    console.log("Queued offline action:", action);
+  } catch (err) {
+    console.error("Failed to queue offline action:", err);
+  }
+}
+
+export async function flushOfflineQueue() {
+  try {
+    const raw = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
+    if (!raw) return;
+    const queue: OfflineAction[] = JSON.parse(raw);
+    if (queue.length === 0) return;
+
+    console.log(`Flushing ${queue.length} offline actions...`);
+    const toProcess = [...queue];
+    await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify([]));
+
+    const failedActions: OfflineAction[] = [];
+
+    for (const action of toProcess) {
+      try {
+        if (action.type === "lesson_completion") {
+          const progressId = `${action.userId}_${action.lessonId}`;
+          const progressRef = doc(db, "lessonProgress", progressId);
+          await setDoc(progressRef, {
+            userId: action.userId,
+            lessonId: action.lessonId,
+            courseId: action.courseId,
+            completed: true,
+            completedAt: serverTimestamp(),
+          });
+          await updateCourseProgress(action.userId, action.courseId);
+        } else if (action.type === "quiz_submission") {
+          const resultId = `${action.userId}_${action.lessonId}`;
+          await setDoc(doc(db, "quizResults", resultId), {
+            userId: action.userId,
+            lessonId: action.lessonId,
+            courseId: action.courseId || "",
+            quizId: action.quizId || "",
+            score: action.score || 0,
+            passed: action.passed || false,
+            answers: action.answers || [],
+            completedAt: serverTimestamp(),
+            attempts: 1,
+          });
+          if (action.passed && action.courseId) {
+            const progressId = `${action.userId}_${action.lessonId}`;
+            const progressRef = doc(db, "lessonProgress", progressId);
+            await setDoc(progressRef, {
+              userId: action.userId,
+              lessonId: action.lessonId,
+              courseId: action.courseId,
+              completed: true,
+              completedAt: serverTimestamp(),
+            });
+          }
+          if (action.courseId) {
+            await updateCourseProgress(action.userId, action.courseId);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to process offline action:", action, err);
+        failedActions.push(action);
+      }
+    }
+
+    if (failedActions.length > 0) {
+      const rawCurrent = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
+      const currentQueue: OfflineAction[] = rawCurrent ? JSON.parse(rawCurrent) : [];
+      const merged = [...failedActions, ...currentQueue];
+      await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(merged));
+    }
+  } catch (err) {
+    console.error("Error flushing offline queue:", err);
   }
 }
