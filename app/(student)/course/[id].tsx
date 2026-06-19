@@ -568,19 +568,9 @@ export default function CourseDetails() {
     }
   };
 
-  // Check if certificate exists when course is completed
+  // Check if certificate exists (regardless of completion status)
   useEffect(() => {
     if (!user || !id) {
-      setCertificate(null);
-      setCheckingCertificate(false);
-      return;
-    }
-
-    const lessonsOrVideoDone = lessons.length > 0 ? (completedLessonIds.length >= lessons.length) : (courseProgress >= 80 || !!completedAt);
-    const quizzesDone = quizzes.length > 0 ? (passedQuizzesCount >= quizzes.length) : false;
-    const completed = (lessonsOrVideoDone && quizzesDone) || !!completedAt;
-
-    if (!completed) {
       setCertificate(null);
       setCheckingCertificate(false);
       return;
@@ -609,10 +599,18 @@ export default function CourseDetails() {
     };
 
     checkCert();
-  }, [user, id, courseProgress, completedLessonIds, lessonProgressMap, lessons, quizzes, passedQuizzesCount, completedAt]);
+  }, [user, id]);
 
   const handleRequestCertificate = async () => {
     if (!user || !course) return;
+
+    // Strict validation check to ensure quizzes are passed
+    const lessonsOrVideoDone = lessons.length > 0 ? (completedLessonIds.length >= lessons.length) : (courseProgress >= 80 || !!completedAt);
+    const quizzesDone = quizzes.length > 0 ? (passedQuizzesCount >= quizzes.length) : false;
+    if (!lessonsOrVideoDone || !quizzesDone) {
+      Alert.alert("Quiz Incomplete", "Please complete all lessons/video and pass all quizzes to request a certificate.");
+      return;
+    }
 
     setRequestingCertificate(true);
     try {
@@ -694,7 +692,7 @@ export default function CourseDetails() {
   const displayProgress = Math.max(courseProgress, calculatedProgress);
   const lessonsOrVideoFinished = lessons.length > 0 ? (completedLessonIds.length >= lessons.length) : (courseProgress >= 80 || !!completedAt);
   const quizzesFinished = totalQuizzes > 0 ? (passedQuizzesCount >= totalQuizzes) : false;
-  const isCompleted = (lessonsOrVideoFinished && quizzesFinished) || !!completedAt;
+  const isCompleted = lessonsOrVideoFinished && quizzesFinished;
 
   return (
     <View style={styles.container}>
