@@ -87,6 +87,8 @@ export default function CourseDetails() {
   const [checkingCertificate, setCheckingCertificate] = useState(false);
   const [requestingCertificate, setRequestingCertificate] = useState(false);
   const [completedAt, setCompletedAt] = useState<any>(null);
+  const [quizzes, setQuizzes] = useState<any[]>([]);
+  const [passedQuizzesCount, setPassedQuizzesCount] = useState(0);
 
   const videoRef = useRef<Video>(null);
   const lastUpdateRef = useRef<number>(Date.now());
@@ -170,6 +172,29 @@ export default function CourseDetails() {
           setCompletedLessonIds(completed);
           const progressMap = await getLessonProgressMap(user.uid, id as string, lsns.map((l: any) => l.id));
           setLessonProgressMap(progressMap);
+
+          // Load quizzes and passed status
+          const quizzesSnap = await getDocs(
+            query(collection(db, "quizzes"), where("courseId", "==", id)),
+          );
+          const qzs = quizzesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setQuizzes(qzs);
+
+          if (qzs.length > 0) {
+            let passedCount = 0;
+            for (const qz of qzs) {
+              const lessonId = (qz as any).lessonId;
+              if (lessonId) {
+                const resultId = `${user.uid}_${lessonId}`;
+                const resultRef = doc(db, "quizResults", resultId);
+                const resultSnap = await getDoc(resultRef);
+                if (resultSnap.exists() && resultSnap.data()?.passed) {
+                  passedCount += 1;
+                }
+              }
+            }
+            setPassedQuizzesCount(passedCount);
+          }
         }
       } catch (e) {
         console.error("Error loading modules/lessons:", e);
@@ -181,15 +206,38 @@ export default function CourseDetails() {
   // Reload progress status when screen comes into focus
   useFocusEffect(
     useCallback(() => {
-      if (!id || !user || lessons.length === 0) return;
+      if (!id || !user) return;
 
       const refreshProgress = async () => {
         try {
           const completed = await getCompletedLessonIds(user.uid, id as string);
           setCompletedLessonIds(completed);
 
-          const progressMap = await getLessonProgressMap(user.uid, id as string, lessons.map((l: any) => l.id));
-          setLessonProgressMap(progressMap);
+          if (lessons.length > 0) {
+            const progressMap = await getLessonProgressMap(user.uid, id as string, lessons.map((l: any) => l.id));
+            setLessonProgressMap(progressMap);
+          }
+
+          // Refresh passed quizzes
+          const quizzesSnap = await getDocs(
+            query(collection(db, "quizzes"), where("courseId", "==", id)),
+          );
+          const qzs = quizzesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setQuizzes(qzs);
+
+          let passedCount = 0;
+          for (const qz of qzs) {
+            const lessonId = (qz as any).lessonId;
+            if (lessonId) {
+              const resultId = `${user.uid}_${lessonId}`;
+              const resultRef = doc(db, "quizResults", resultId);
+              const resultSnap = await getDoc(resultRef);
+              if (resultSnap.exists() && resultSnap.data()?.passed) {
+                passedCount += 1;
+              }
+            }
+          }
+          setPassedQuizzesCount(passedCount);
         } catch (e) {
           console.error("Error refreshing progress on focus:", e);
         }
@@ -528,21 +576,9 @@ export default function CourseDetails() {
       return;
     }
 
-    // Calculate completion status inside the hook to avoid hook ordering issues
-    let completedUnits = 0;
-    lessons.forEach((l) => {
-      const isDone = completedLessonIds.includes(l.id);
-      if (isDone) {
-        completedUnits += 1;
-      } else {
-        const progressInfo = lessonProgressMap[l.id];
-        const progressPct = progressInfo ? progressInfo.progressPercent : 0;
-        completedUnits += progressPct / 100;
-      }
-    });
-    const calcProgress = lessons.length > 0 ? Math.round((completedUnits / lessons.length) * 100) : 0;
-    const dispProgress = Math.max(courseProgress, calcProgress);
-    const completed = dispProgress === 100 || !!completedAt;
+    const lessonsOrVideoDone = lessons.length > 0 ? (completedLessonIds.length >= lessons.length) : (courseProgress >= 80 || !!completedAt);
+    const quizzesDone = quizzes.length > 0 ? (passedQuizzesCount >= quizzes.length) : false;
+    const completed = (lessonsOrVideoDone && quizzesDone) || !!completedAt;
 
     if (!completed) {
       setCertificate(null);
@@ -573,7 +609,7 @@ export default function CourseDetails() {
     };
 
     checkCert();
-  }, [user, id, courseProgress, completedLessonIds, lessonProgressMap, lessons, completedAt]);
+  }, [user, id, courseProgress, completedLessonIds, lessonProgressMap, lessons, quizzes, passedQuizzesCount, completedAt]);
 
   const handleRequestCertificate = async () => {
     if (!user || !course) return;
@@ -642,12 +678,23 @@ export default function CourseDetails() {
     }
   });
 
-  const calculatedProgress = lessons.length > 0
-    ? Math.round((completedUnitsFromLessons / lessons.length) * 100)
-    : 0;
+  const totalLessons = lessons.length;
+  const totalQuizzes = quizzes.length;
+  const totalUnits = totalLessons + totalQuizzes;
+
+  let calculatedProgress = 0;
+  if (totalUnits > 0) {
+    calculatedProgress = Math.round(
+      ((completedUnitsFromLessons + passedQuizzesCount) / totalUnits) * 100
+    );
+  } else if (lessons.length > 0) {
+    calculatedProgress = Math.round((completedUnitsFromLessons / lessons.length) * 100);
+  }
 
   const displayProgress = Math.max(courseProgress, calculatedProgress);
-  const isCompleted = displayProgress === 100 || !!completedAt;
+  const lessonsOrVideoFinished = lessons.length > 0 ? (completedLessonIds.length >= lessons.length) : (courseProgress >= 80 || !!completedAt);
+  const quizzesFinished = totalQuizzes > 0 ? (passedQuizzesCount >= totalQuizzes) : false;
+  const isCompleted = (lessonsOrVideoFinished && quizzesFinished) || !!completedAt;
 
   return (
     <View style={styles.container}>
@@ -1075,6 +1122,22 @@ export default function CourseDetails() {
               <Award size={18} color="#c5a059" />
               <Text style={styles.viewCertificateBtnText}>View Certificate</Text>
             </TouchableOpacity>
+          )
+        ) : lessonsOrVideoFinished ? (
+          totalQuizzes > 0 ? (
+            <View style={styles.quizPendingStatus}>
+              <ClipboardList size={20} color="#F59E0B" />
+              <Text style={styles.quizPendingText}>
+                Complete and pass all quizzes to request your certificate
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.quizPendingStatus}>
+              <Clock size={20} color="#3B82F6" />
+              <Text style={styles.quizPendingText}>
+                Wait for the admin to upload a quiz to get your certificate
+              </Text>
+            </View>
           )
         ) : (
           <View style={styles.enrolledStatus}>
@@ -1638,5 +1701,24 @@ const styles = StyleSheet.create({
     ...Typography.bodySmall,
     color: Colors.textSecondary,
     fontWeight: "600",
+  },
+  quizPendingStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 56,
+    backgroundColor: Colors.surfaceLight,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  quizPendingText: {
+    ...Typography.bodySmall,
+    color: Colors.textSecondary,
+    fontWeight: "600",
+    textAlign: "center",
+    flex: 1,
   },
 });
