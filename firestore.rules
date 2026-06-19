@@ -1,0 +1,107 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'super_admin' || 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher_admin'
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    // 1. Users Collection
+    match /users/{userId} {
+      // Anyone authenticated can read user profiles (needed for displaying names, etc.)
+      allow read: if isAuthenticated();
+      
+      // Users can create their own profile during signup. Admins can create profiles for others.
+      allow create: if isOwner(userId) || isAdmin();
+      
+      // Admins can update any user. Users can update their own profile except admin-only role/status fields.
+      allow update: if isAdmin() || (
+        isOwner(userId) && 
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isDisabled'])
+      );
+      
+      // Only admins can delete users
+      allow delete: if isAdmin();
+    }
+
+    // 2. Course Content (Courses, Modules, Lessons, Quizzes)
+    match /courses/{courseId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /modules/{moduleId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /lessons/{lessonId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /quizzes/{quizId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // 3. User Progress & Interactions
+    match /quizResults/{resultId} {
+      // Result IDs are format: userId_lessonId
+      allow read: if isAuthenticated() && (isAdmin() || resultId.matches(request.auth.uid + '.*'));
+      
+      // Users can only submit their own results
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+    }
+
+    match /enrollments/{enrollmentId} {
+      // Enrollment IDs are format: userId_courseId
+      allow read: if isAuthenticated() && (isAdmin() || resource == null || resource.data.userId == request.auth.uid);
+      
+      // Users can create their own enrollments
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+    }
+
+    match /lessonProgress/{progressId} {
+      // Progress IDs are format: userId_lessonId
+      allow read: if isAuthenticated() && (isAdmin() || resource == null || resource.data.userId == request.auth.uid);
+      
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+    }
+
+    match /certificates/{certificateId} {
+      // Allow users to read their own certificates
+      allow read: if isAuthenticated() && (isAdmin() || resource == null || resource.data.userId == request.auth.uid);
+      // Only admins can issue/update certificates
+      allow write: if isAdmin();
+    }
+
+    // Deny access to everything else by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

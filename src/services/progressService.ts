@@ -1,0 +1,215 @@
+import {
+    collection,
+    doc,
+    getDoc,
+    getDocs,
+    query,
+    serverTimestamp,
+    setDoc,
+    updateDoc,
+    where,
+} from "firebase/firestore";
+import { db } from "../config/firebase";
+import { generateCertificate } from "./certificateService";
+
+// ─── Mark a Lesson as Complete ───────────────────────────────────────────────
+export async function markLessonComplete(
+  userId: string,
+  lessonId: string,
+  courseId: string,
+) {
+  const progressId = `${userId}_${lessonId}`;
+  const progressRef = doc(db, "lessonProgress", progressId);
+
+  const existing = await getDoc(progressRef);
+  if (existing.exists() && existing.data()?.completed) return; // already done
+
+  await setDoc(progressRef, {
+    userId,
+    lessonId,
+    courseId,
+    completed: true,
+    completedAt: serverTimestamp(),
+  });
+
+  // Recalculate course progress
+  await updateCourseProgress(userId, courseId);
+}
+
+// ─── Update Course Progress % ────────────────────────────────────────────────
+export async function updateCourseProgress(userId: string, courseId: string) {
+  // 1. Count total lessons for this course
+  const lessonsSnap = await getDocs(
+    query(collection(db, "lessons"), where("courseId", "==", courseId)),
+  );
+  const totalLessons = lessonsSnap.size;
+  // don't return early — a course may have only quizzes
+
+  // 2. Count completed lessons for this user+course
+  const progressSnap = await getDocs(
+    query(
+      collection(db, "lessonProgress"),
+      where("userId", "==", userId),
+      where("courseId", "==", courseId),
+      where("completed", "==", true),
+    ),
+  );
+  const completedLessons = progressSnap.size;
+
+  // 3. Check quizzes for this course and count passed quizzes for this user
+  const quizzesSnap = await getDocs(
+    query(collection(db, "quizzes"), where("courseId", "==", courseId)),
+  );
+  const totalQuizzes = quizzesSnap.size;
+  let passedQuizzes = 0;
+
+  if (totalQuizzes > 0) {
+    for (const quizDoc of quizzesSnap.docs) {
+      const quizData = quizDoc.data();
+      const lessonId = quizData.lessonId;
+      const resultId = `${userId}_${lessonId}`;
+      const resultRef = doc(db, "quizResults", resultId);
+      const resultSnap = await getDoc(resultRef);
+      if (resultSnap.exists() && resultSnap.data()?.passed) {
+        passedQuizzes += 1;
+      }
+    }
+  }
+
+  // 4. Calculate percentage treating each lesson and each quiz as equal units
+  const totalUnits = totalLessons + totalQuizzes;
+  let progress = 0;
+  if (totalUnits > 0) {
+    progress = Math.round(
+      ((completedLessons + passedQuizzes) / totalUnits) * 100,
+    );
+  }
+
+  // 5. Determine if course is fully complete: all lessons completed and all quizzes passed
+  const allQuizzesPassed = totalQuizzes === passedQuizzes;
+  const courseComplete = completedLessons >= totalLessons && allQuizzesPassed;
+
+  // 6. Update enrollment doc
+  const enrollmentId = `${userId}_${courseId}`;
+  const enrollmentRef = doc(db, "enrollments", enrollmentId);
+  const enrollSnap = await getDoc(enrollmentRef);
+
+  if (enrollSnap.exists()) {
+    const updateData: any = {
+      progress,
+      completedLessonsCount: completedLessons,
+      totalLessonsCount: totalLessons,
+    };
+
+    if (courseComplete && !enrollSnap.data()?.completedAt) {
+      updateData.completedAt = serverTimestamp();
+    }
+
+    await updateDoc(enrollmentRef, updateData);
+
+    // Auto-generate certificate when course becomes complete
+    if (courseComplete) {
+      try {
+        // fetch student name and course title for certificate
+        const userRef = doc(db, "users", userId);
+        const userSnap = await getDoc(userRef);
+        const studentName = userSnap.exists()
+          ? (userSnap.data() as any).fullName ||
+            (userSnap.data() as any).displayName ||
+            "Student"
+          : "Student";
+
+        const courseRef = doc(db, "courses", courseId);
+        const courseSnap = await getDoc(courseRef);
+        const courseTitle = courseSnap.exists()
+          ? (courseSnap.data() as any).title || "Course"
+          : "Course";
+
+        await generateCertificate(userId, courseId, studentName, courseTitle);
+      } catch (err) {
+        console.error("Error auto-generating certificate:", err);
+      }
+    }
+  }
+
+  return { progress, courseComplete, completedLessons, totalLessons };
+}
+
+// ─── Check if a specific lesson is completed ────────────────────────────────
+export async function isLessonCompleted(
+  userId: string,
+  lessonId: string,
+): Promise<boolean> {
+  const progressId = `${userId}_${lessonId}`;
+  const progressRef = doc(db, "lessonProgress", progressId);
+  const snap = await getDoc(progressRef);
+  return snap.exists() && snap.data()?.completed === true;
+}
+
+// ─── Get all completed lesson IDs for a course ──────────────────────────────
+export async function getCompletedLessonIds(
+  userId: string,
+  courseId: string,
+): Promise<string[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, "lessonProgress"),
+      where("userId", "==", userId),
+      where("courseId", "==", courseId),
+      where("completed", "==", true),
+    ),
+  );
+  return snap.docs.map((d) => d.data().lessonId);
+}
+
+// ─── Mark a course (single-video) as complete and generate certificate ────
+export async function markCourseComplete(userId: string, courseId: string) {
+  try {
+    const enrollmentId = `${userId}_${courseId}`;
+    const enrollmentRef = doc(db, "enrollments", enrollmentId);
+    const enrollSnap = await getDoc(enrollmentRef);
+
+    const courseRef = doc(db, "courses", courseId);
+    const courseSnap = await getDoc(courseRef);
+
+    const userRef = doc(db, "users", userId);
+    const userSnap = await getDoc(userRef);
+
+    const studentName = userSnap.exists()
+      ? (userSnap.data() as any).fullName ||
+        (userSnap.data() as any).displayName ||
+        "Student"
+      : "Student";
+    const courseTitle = courseSnap.exists()
+      ? (courseSnap.data() as any).title || "Course"
+      : "Course";
+
+    const updateData: any = {
+      progress: 100,
+      completedLessonsCount: 1,
+      totalLessonsCount: 1,
+    };
+
+    if (!enrollSnap.exists()) {
+      await setDoc(enrollmentRef, {
+        userId,
+        courseId,
+        enrolledAt: serverTimestamp(),
+        progress: 100,
+        completedLessonsCount: 1,
+        totalLessonsCount: 1,
+        completedAt: serverTimestamp(),
+      });
+    } else {
+      if (!enrollSnap.data()?.completedAt) {
+        updateData.completedAt = serverTimestamp();
+      }
+      await updateDoc(enrollmentRef, updateData);
+    }
+
+    // Generate certificate and attach to enrollment
+    await generateCertificate(userId, courseId, studentName, courseTitle);
+  } catch (err) {
+    console.error("Error in markCourseComplete:", err);
+  }
+}
