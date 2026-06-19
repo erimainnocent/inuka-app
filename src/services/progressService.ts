@@ -25,13 +25,25 @@ export async function markLessonComplete(
   const existing = await getDoc(progressRef);
   if (existing.exists() && existing.data()?.completed) return; // already done
 
+  const localKey = `lesson_progress_${userId}_${lessonId}`;
+  await AsyncStorage.setItem(
+    localKey,
+    JSON.stringify({
+      progressPercent: 100,
+      completed: true,
+      courseId,
+      updatedAt: Date.now(),
+    })
+  );
+
   await setDoc(progressRef, {
     userId,
     lessonId,
     courseId,
+    progressPercent: 100,
     completed: true,
     completedAt: serverTimestamp(),
-  });
+  }, { merge: true });
 
   // Recalculate course progress
   await updateCourseProgress(userId, courseId);
@@ -46,16 +58,28 @@ export async function updateCourseProgress(userId: string, courseId: string) {
   const totalLessons = lessonsSnap.size;
   // don't return early — a course may have only quizzes
 
-  // 2. Count completed lessons for this user+course
+  // 2. Count completed lessons for this user+course (including partial progress)
   const progressSnap = await getDocs(
     query(
       collection(db, "lessonProgress"),
       where("userId", "==", userId),
       where("courseId", "==", courseId),
-      where("completed", "==", true),
     ),
   );
-  const completedLessons = progressSnap.size;
+  
+  let completedUnitsFromLessons = 0;
+  let completedLessonsCount = 0;
+  
+  progressSnap.docs.forEach((doc) => {
+    const data = doc.data();
+    if (data.completed) {
+      completedUnitsFromLessons += 1;
+      completedLessonsCount += 1;
+    } else {
+      const progressPercent = data.progressPercent || 0;
+      completedUnitsFromLessons += progressPercent / 100;
+    }
+  });
 
   // 3. Check quizzes for this course and count passed quizzes for this user
   const quizzesSnap = await getDocs(
@@ -82,13 +106,13 @@ export async function updateCourseProgress(userId: string, courseId: string) {
   let progress = 0;
   if (totalUnits > 0) {
     progress = Math.round(
-      ((completedLessons + passedQuizzes) / totalUnits) * 100,
+      ((completedUnitsFromLessons + passedQuizzes) / totalUnits) * 100,
     );
   }
 
   // 5. Determine if course is fully complete: all lessons completed and all quizzes passed
   const allQuizzesPassed = totalQuizzes === passedQuizzes;
-  const courseComplete = completedLessons >= totalLessons && allQuizzesPassed;
+  const courseComplete = completedLessonsCount >= totalLessons && allQuizzesPassed;
 
   // 6. Update enrollment doc
   const enrollmentId = `${userId}_${courseId}`;
@@ -325,9 +349,10 @@ export async function flushOfflineQueue() {
             userId: action.userId,
             lessonId: action.lessonId,
             courseId: action.courseId,
+            progressPercent: 100,
             completed: true,
             completedAt: serverTimestamp(),
-          });
+          }, { merge: true });
           await updateCourseProgress(action.userId, action.courseId);
         } else if (action.type === "quiz_submission") {
           const resultId = `${action.userId}_${action.lessonId}`;
@@ -349,9 +374,10 @@ export async function flushOfflineQueue() {
               userId: action.userId,
               lessonId: action.lessonId,
               courseId: action.courseId,
+              progressPercent: 100,
               completed: true,
               completedAt: serverTimestamp(),
-            });
+            }, { merge: true });
           }
           if (action.courseId) {
             await updateCourseProgress(action.userId, action.courseId);
@@ -372,4 +398,101 @@ export async function flushOfflineQueue() {
   } catch (err) {
     console.error("Error flushing offline queue:", err);
   }
+}
+
+// ─── Save Lesson Progress (Partial or Complete) ─────────────────────────────
+export async function saveLessonProgress(
+  userId: string,
+  lessonId: string,
+  courseId: string,
+  progressPercent: number,
+  completed: boolean
+) {
+  try {
+    const progressId = `${userId}_${lessonId}`;
+    const localKey = `lesson_progress_${userId}_${lessonId}`;
+    
+    const progressData = { progressPercent, completed, courseId, updatedAt: Date.now() };
+    await AsyncStorage.setItem(localKey, JSON.stringify(progressData));
+
+    try {
+      const progressRef = doc(db, "lessonProgress", progressId);
+      await setDoc(progressRef, {
+        userId,
+        lessonId,
+        courseId,
+        progressPercent,
+        completed,
+        completedAt: completed ? serverTimestamp() : null,
+        lastWatchedAt: serverTimestamp(),
+      }, { merge: true });
+
+      await updateCourseProgress(userId, courseId);
+    } catch (dbErr) {
+      console.warn("Offline/Error saving progress to Firestore, saved locally:", dbErr);
+      if (completed) {
+        await queueOfflineAction({
+          type: "lesson_completion",
+          userId,
+          lessonId,
+          courseId,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  } catch (err) {
+    console.error("Error in saveLessonProgress:", err);
+  }
+}
+
+// ─── Get Lesson Progress Map ────────────────────────────────────────────────
+export async function getLessonProgressMap(
+  userId: string,
+  courseId: string,
+  lessonIds: string[]
+): Promise<Record<string, { progressPercent: number; completed: boolean }>> {
+  const progressMap: Record<string, { progressPercent: number; completed: boolean }> = {};
+  
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, "lessonProgress"),
+        where("userId", "==", userId),
+        where("courseId", "==", courseId)
+      )
+    );
+    
+    snap.docs.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (data.lessonId) {
+        progressMap[data.lessonId] = {
+          progressPercent: data.completed ? 100 : (data.progressPercent || 0),
+          completed: !!data.completed,
+        };
+      }
+    });
+  } catch (err) {
+    console.error("Error fetching lesson progress from Firestore:", err);
+  }
+
+  for (const lessonId of lessonIds) {
+    try {
+      const localKey = `lesson_progress_${userId}_${lessonId}`;
+      const raw = await AsyncStorage.getItem(localKey);
+      if (raw) {
+        const localData = JSON.parse(raw);
+        const existing = progressMap[lessonId];
+        if (!existing || localData.progressPercent > existing.progressPercent || localData.completed) {
+          progressMap[lessonId] = {
+            progressPercent: localData.completed ? 100 : (localData.progressPercent || 0),
+            completed: !!localData.completed,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Error reading local progress for lesson:", lessonId, e);
+    }
+  }
+
+  return progressMap;
 }

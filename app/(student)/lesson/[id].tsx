@@ -44,6 +44,7 @@ import {
     isLessonCompleted,
     markLessonComplete,
     queueOfflineAction,
+    saveLessonProgress,
 } from "../../../src/services/progressService";
 import { Spacing, Typography } from "../../../src/theme";
 import { Colors } from "../../../src/theme/colors";
@@ -76,6 +77,8 @@ export default function LessonDetail() {
   const lastLearningUpdateRef = useRef<number>(Date.now());
   const watchedSecondsRef = useRef<number>(0);
   const videoDurationRef = useRef<number>(0);
+  const lastSavedPctRef = useRef<number>(0);
+  const lastSavedTimeRef = useRef<number>(Date.now());
 
   const [videoProgress, setVideoProgress] = useState(0);
 
@@ -389,6 +392,21 @@ export default function LessonDetail() {
           // Auto-complete at 80% watch threshold
           if (!completed && pct >= 0.8) {
             handleAutoComplete();
+          } else if (!completed && user && lesson) {
+            // Save progress if changed by at least 5% or 5 seconds have passed (with at least 1% change)
+            const pctDiff = Math.abs(pct - lastSavedPctRef.current);
+            const timeDiff = now - lastSavedTimeRef.current;
+            if (pctDiff >= 0.05 || (timeDiff >= 5000 && pctDiff >= 0.01)) {
+              lastSavedPctRef.current = pct;
+              lastSavedTimeRef.current = now;
+              saveLessonProgress(
+                user.uid,
+                lesson.id,
+                (paramCourseId as string) || lesson.courseId,
+                Math.round(pct * 100),
+                false
+              );
+            }
           }
         }
       }
@@ -400,6 +418,21 @@ export default function LessonDetail() {
         await updateDoc(userRef, {
           totalLearningMinutes: increment(1),
         });
+      }
+    } else if (status.positionMillis && videoDurationRef.current > 0 && user && lesson && !completed) {
+      // Save progress on pause or seek if changed by at least 2%
+      const pct = (status.positionMillis / 1000) / videoDurationRef.current;
+      const pctDiff = Math.abs(pct - lastSavedPctRef.current);
+      if (pctDiff >= 0.02) {
+        lastSavedPctRef.current = pct;
+        lastSavedTimeRef.current = Date.now();
+        saveLessonProgress(
+          user.uid,
+          lesson.id,
+          (paramCourseId as string) || lesson.courseId,
+          Math.round(pct * 100),
+          false
+        );
       }
     }
   };

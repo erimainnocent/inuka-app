@@ -2,7 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import { LinearGradient } from "expo-linear-gradient";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import {
     collection,
     doc,
@@ -32,7 +32,7 @@ import {
     MoreVertical,
     Play,
 } from "lucide-react-native";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -51,6 +51,7 @@ import { useAuth } from "../../../src/context/AuthContext";
 import {
     getCompletedLessonIds,
     markCourseComplete,
+    getLessonProgressMap,
 } from "../../../src/services/progressService";
 import { Spacing, Typography } from "../../../src/theme";
 import { Colors } from "../../../src/theme/colors";
@@ -75,6 +76,7 @@ export default function CourseDetails() {
     Record<string, boolean>
   >({});
   const [completedLessonIds, setCompletedLessonIds] = useState<string[]>([]);
+  const [lessonProgressMap, setLessonProgressMap] = useState<Record<string, { progressPercent: number; completed: boolean }>>({});
   const [courseProgress, setCourseProgress] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
@@ -158,6 +160,8 @@ export default function CourseDetails() {
         if (user) {
           const completed = await getCompletedLessonIds(user.uid, id as string);
           setCompletedLessonIds(completed);
+          const progressMap = await getLessonProgressMap(user.uid, id as string, lsns.map((l: any) => l.id));
+          setLessonProgressMap(progressMap);
         }
       } catch (e) {
         console.error("Error loading modules/lessons:", e);
@@ -165,6 +169,27 @@ export default function CourseDetails() {
     };
     loadStructure();
   }, [id, user]);
+
+  // Reload progress status when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      if (!id || !user || lessons.length === 0) return;
+
+      const refreshProgress = async () => {
+        try {
+          const completed = await getCompletedLessonIds(user.uid, id as string);
+          setCompletedLessonIds(completed);
+
+          const progressMap = await getLessonProgressMap(user.uid, id as string, lessons.map((l: any) => l.id));
+          setLessonProgressMap(progressMap);
+        } catch (e) {
+          console.error("Error refreshing progress on focus:", e);
+        }
+      };
+
+      refreshProgress();
+    }, [id, user, lessons])
+  );
 
   const toggleModule = (moduleId: string) => {
     setExpandedModules((prev) => ({ ...prev, [moduleId]: !prev[moduleId] }));
@@ -855,6 +880,7 @@ export default function CourseDetails() {
                               <Text style={styles.lessonMeta}>
                                 Lesson {lIdx + 1}
                                 {lesson.pdfUrl ? " • Has PDF" : ""}
+                                {!isDone && lessonProgressMap[lesson.id] && lessonProgressMap[lesson.id].progressPercent > 0 && ` • ${lessonProgressMap[lesson.id].progressPercent}% watched`}
                               </Text>
                             </View>
                             <ChevronRight size={16} color={Colors.textMuted} />
