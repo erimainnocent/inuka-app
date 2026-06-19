@@ -12,6 +12,12 @@ service firebase.storage {
       allow write: if isAuthenticated() && request.auth.uid == userId;
     }
 
+    // Certificates
+    match /certificates/{userId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
     // Course, Module, and Lesson resources — any authenticated user can read;
     // writes require a valid auth session (app-level role guard enforces admin-only access)
     match /courses/{allPaths=**} {

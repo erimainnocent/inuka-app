@@ -157,7 +157,7 @@ export async function updateCourseProgress(userId: string, courseId: string) {
     }
   }
 
-  return { progress, courseComplete, completedLessons, totalLessons };
+  return { progress, courseComplete, completedLessons: completedLessonsCount, totalLessons };
 }
 
 // ─── Check if a specific lesson is completed ────────────────────────────────
